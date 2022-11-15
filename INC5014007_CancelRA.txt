@@ -1,0 +1,70 @@
+USE OMSReturns
+Go
+
+DECLARE @canStatus int
+DECLARE @returnHeaderId bigint
+DECLARE @returnLineItemId bigint
+DECLARE @date datetime = GetDate()
+DECLARE @modifiedby varchar(50) = 'PROD\INC5014007'
+
+SELECT @canStatus = [Id] FROM [dbo].[ReturnStatusType] with(nolock) where [LongDescription] = 'Cancelled'
+SELECT @returnHeaderId = [Id] FROM [dbo].[ReturnHeader] with(nolock) where ReturnAuthorizationNumber = '13099406'  
+SELECT @returnLineItemId=Id FROM ReturnLineItem with(nolock) where ReturnHeaderId = @returnHeaderId
+
+INSERT INTO [dbo].[ReturnLineItemActivity]
+           ([ReturnHeaderId]
+           ,[ReturnLineItemId]
+           ,[StatusTypeId]
+           ,[Quantity]
+           ,[CreatedTransactionTypeId]
+           ,[CreatedTransactionId]
+           ,[CreatedTransactionNumber]
+           ,[CreatedTransactionLocationNumber]
+           ,[CreatedTransactionLineItemId]
+           ,[CreatedTransactionSequenceNumber]
+           ,[CreatedDate]
+           ,[CreatedBy]
+           ,[ModifiedDate]
+           ,[ModifiedBy])
+     SELECT ReturnHeaderId
+           ,ReturnLineItemId
+           ,@canStatus
+           ,Quantity
+           ,CreatedTransactionTypeId
+           ,CreatedTransactionId
+           ,CreatedTransactionNumber
+           ,CreatedTransactionLocationNumber
+           ,CreatedTransactionLineItemId
+           ,CreatedTransactionSequenceNumber
+           ,@date
+           ,@modifiedby
+           ,@date
+           ,@modifiedby
+	   FROM ReturnLineItemActivity with(rowlock)
+	   WHERE ReturnLineItemId = @returnLineItemId
+
+UPDATE rl
+	SET StatusTypeId = @canstatus,
+	   ModifiedDate = @date,
+	   ModifiedBy = @modifiedby,
+	   StatusTypeIdChangedDate = @date,
+	   NetTotalReturnQuantity =( 
+			ISNULL((SELECT SUM(ISNULL(Quantity,0)) FROM ReturnLineItemActivity with (nolock) WHERE ReturnLineItemId = rl.Id AND StatusTypeId = 1),0)
+			+																
+			ISNULL((SELECT SUM(ISNULL(Quantity,0)) FROM ReturnLineItemActivity with (nolock) WHERE ReturnLineItemId = rl.Id AND StatusTypeId = 62),0)
+			+																 
+			ISNULL((SELECT SUM(ISNULL(Quantity,0)) FROM ReturnLineItemActivity with (nolock) WHERE ReturnLineItemId = rl.Id AND StatusTypeId = 63),0)
+			-																 
+			ISNULL((SELECT SUM(ISNULL(Quantity,0)) FROM ReturnLineItemActivity with (nolock) WHERE ReturnLineItemId = rl.Id AND StatusTypeId = 6),0)
+		)
+	FROM dbo.ReturnLineItem rl with (rowlock)
+	WHERE rl.ReturnHeaderId = @returnHeaderId AND rl.ReturnHeaderId = @returnLineItemId
+	
+-- set RA to cancel
+UPDATE rh
+	SET StatusTypeId = @canstatus,
+	   ModifiedDate = @date,
+	   ModifiedBy = @modifiedby
+	FROM dbo.ReturnHeader rh with (rowlock)
+	WHERE Id = @returnHeaderId
+
