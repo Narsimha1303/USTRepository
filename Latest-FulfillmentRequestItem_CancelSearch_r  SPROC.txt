@@ -1,0 +1,236 @@
+USE [OMSOrders]
+GO
+exec sp_CostcoRename 'FulfillmentRequestItem_CancelSearch_r_PerfomanceTuning'
+GO
+
+/****** Object:  StoredProcedure [dbo].[FulfillmentRequestItem_CancelSearch_r_PerfomanceTuning]    Script Date: 10/20/2022 11:28:30 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+CREATE PROCEDURE [dbo].[FulfillmentRequestItem_CancelSearch_r_PerfomanceTuning]
+	@WarehouseNumber	INT,
+	@FulfillmentCenterCompanyIdList TEXT,
+	@ControlNumber BIGINT,
+	@SourceOrderNumber VARCHAR(20),
+	@CreatedDateStart	DATETIME,
+	@CreatedDateEnd		DATETIME,
+	@UseDateRange		BIT,
+	@ItemNumberList		TEXT
+AS
+/******************************************************************************
+**	Description:	FulfillmentRequestItem_CancelSearch_r_PerfomanceTuning
+**
+** Project Name:    OMS
+**		 Author:	Jeena R		2007-08-06
+**
+** Example:
+
+*******************************************************************************
+**	Change History
+**
+**	Date:		Author:			Description:
+**	--------	-----------		-----------------------------------------------
+**
+**	4/25/2008	John Lahore	 Changed to use sp_CostcoRename.
+**	4/25/2008	John Lahore	 Changed Alter to Create.
+**	4/25/2008	John Lahore	 Changed Grant to LeastAccess.
+**	4/25/2008	John Lahore	 Added Execute AS to Dynamic SQL.
+**  5/1/2009    Jeena R      Removed FulfillmentRequestHeaderId parameter as it
+**							 is not available on search
+**                           Added OrderVersion column in the select column list
+**	9/29/2009	Dave Depew   Added (NOLOCK)
+**  08/03/2010	Dave Depew	 Added bit for DontAddInventoryBackToSystem
+**  02/09/2011  Cyril Philip Changed Orderdate to CreatedDate in FulfillmentRequestHeader
+**	6/04/2018	Ian Hong  Update the table hint with WITH
+**  7/19/2019   rageshnair   Added VendorNumber,RequestedCancelQuantity,OpenQuantityForCancel to select
+**  7/19/2019   rageshnair   Added FulfillmentRequestHeader data to select
+**  7/22/2019   rageshnair   Display Pending Cancel items on UI
+**  03/10/2020  rageshnair	 Handle invalid cancellation request
+**  10/21/2021  Mahesh	          Perfomance tuning
+*******************************************************************************/
+SET NOCOUNT ON
+
+-- declare and load Company Id table from the function One Time
+DECLARE @CompanyIds TABLE
+	(FulfillmentCenterCompanyId int)		
+IF (DATALENGTH(@FulfillmentCenterCompanyIdList) > 0)
+BEGIN	
+	INSERT INTO @CompanyIds(FulfillmentCenterCompanyId)
+	SELECT [Value] FROM dbo.fn_ConvertTextToInt(@FulfillmentCenterCompanyIdList,',')
+END	
+
+-- declare and load Items table from the function One Time
+DECLARE @Items TABLE
+	(ItemNumber [varchar] (20))
+IF (DATALENGTH(@ItemNumberList) > 0)
+BEGIN	
+	INSERT INTO @Items(ItemNumber)
+	SELECT SUBSTRING([Value],1,20) FROM dbo.fn_ConvertTextToNVarchar(@ItemNumberList,',')
+END	
+
+DECLARE @FulfillmentRequestHeaderIds TABLE
+	(FulfillmentRequestHeaderId bigint)
+		
+SET @CreatedDateStart = CONVERT(DATETIME,
+	CONVERT(VARCHAR(10), @CreatedDateStart, 120) + ' 00:00:00')
+SET @CreatedDateEnd = CONVERT(DATETIME,
+	CONVERT(VARCHAR(10), @CreatedDateEnd, 120) + ' 23:59:59')
+
+
+
+
+DECLARE @FulfillmentRequestHeaderId BIGINT
+
+IF NOT @SourceOrderNumber IS NULL AND @SourceOrderNumber > ''
+BEGIN
+	INSERT INTO @FulfillmentRequestHeaderIds(FulfillmentRequestHeaderId)
+	SELECT fulHdr.Id
+	FROM dbo.OrderHeader ordHdr  WITH (NOLOCK) 
+	INNER JOIN dbo.FulfillmentRequestHeader fulHdr  WITH (NOLOCK) ON ordHdr.Id = fulHdr.OrderHeaderId AND fulHdr.StatusTypeId = 11	
+	LEFT OUTER JOIN @CompanyIds cc on fulHdr.FulfillmentCenterCompanyId = cc.FulfillmentCenterCompanyId
+	WHERE ordHdr.SourceOrderNumber = @SourceOrderNumber
+	AND fulHdr.StatusTypeId = 11
+	AND (DATALENGTH(@FulfillmentCenterCompanyIdList) = 0 OR cc.FulfillmentCenterCompanyId IS NOT NULL)		
+	AND (@UseDateRange = 0 OR fulHdr.CreatedDate BETWEEN @CreatedDateStart AND @CreatedDateEnd)
+END	
+ELSE IF NOT @ControlNumber IS NULL AND @ControlNumber > 0
+	BEGIN
+	INSERT INTO @FulfillmentRequestHeaderIds(FulfillmentRequestHeaderId)
+	SELECT fulHdr.Id
+		FROM dbo.FulfillmentRequestHeader fulHdr  WITH (NOLOCK) 		
+		LEFT OUTER JOIN @CompanyIds cc on fulHdr.FulfillmentCenterCompanyId = cc.FulfillmentCenterCompanyId		
+		WHERE fulHdr.ControlNumber = @ControlNumber
+		AND fulHdr.StatusTypeId = 11
+		AND (DATALENGTH(@FulfillmentCenterCompanyIdList) = 0 OR cc.FulfillmentCenterCompanyId IS NOT NULL)
+		AND (@UseDateRange = 0 OR fulHdr.CreatedDate BETWEEN @CreatedDateStart AND @CreatedDateEnd)				
+	END
+ELSE	
+	BEGIN
+		INSERT INTO @FulfillmentRequestHeaderIds(FulfillmentRequestHeaderId)
+		SELECT fulHdr.Id
+		FROM dbo.FulfillmentRequestHeader fulHdr  WITH (NOLOCK) 		
+	    LEFT OUTER JOIN @CompanyIds cc on fulHdr.FulfillmentCenterCompanyId = cc.FulfillmentCenterCompanyId		
+		WHERE fulHdr.StatusTypeId = 11
+		AND (DATALENGTH(@FulfillmentCenterCompanyIdList) = 0 OR cc.FulfillmentCenterCompanyId IS NOT NULL)
+		AND (fulHdr.CreatedDate BETWEEN @CreatedDateStart AND @CreatedDateEnd)					
+	END	
+
+SELECT  
+[FulfillmentRequestHeaderId] = fulHdr.Id,		
+fulHdr.ControlNumber,
+fulHdr.CreatedDate,
+fulHdr.FulfillmentCenterCompanyId,
+ft.Code as FulfillmentCenterSystem,
+ordHdr.SourceOrderNumber,
+ordHdr.SourceOrderSystem,
+ordHdr.WarehouseNumber,
+[OrderHeaderId] = ordHdr.Id,
+[OrderVersion] = ordHdr.Version,
+[OutputMessage] = '',
+1 AS AddInventoryBackToSystem
+FROM @FulfillmentRequestHeaderIds headerIds
+INNER JOIN dbo.FulfillmentRequestHeader fulHdr  WITH (NOLOCK) ON headerIds.FulfillmentRequestHeaderId = fulHdr.Id
+INNER JOIN dbo.OrderHeader ordHdr  WITH (NOLOCK) ON fulHdr.OrderHeaderId = ordHdr.Id
+INNER JOIN OMSItems.dbo.FulfillmentCenterCompany fc  WITH (NOLOCK) on fulHdr.FulfillmentCenterCompanyId = fc.Id
+INNER JOIN OMSItems.dbo.FulfillmentCenterType ft  WITH (NOLOCK) ON fc.FulfillmentCenterTypeId = ft.Id
+WHERE (@WarehouseNumber = -1 OR ordHdr.WarehouseNumber = @WarehouseNumber)
+
+;WITH Cte_FulfillmentItemCancellation(FulfillmentRequestItemId,RequestedCancelQuantity) AS
+	(
+		SELECT 
+			fri.id,SUM(ISNULL(fric.Quantity,0) - ISNULL(fric.ShippedQuantity,0) - ISNULL(fric.CancelledQuantity,0)) 
+		FROM 
+			@FulfillmentRequestHeaderIds headerIds
+		INNER JOIN
+			FulfillmentRequestItem fri WITH(NOLOCK)
+			ON headerIds.FulfillmentRequestHeaderId = fri.FulfillmentRequestHeaderId
+		LEFT OUTER JOIN 
+			FulfillmentRequestItemCancellation fric WITH(NOLOCK)
+			ON fri.Id = fric.FulfillmentRequestItemId
+			AND fric.IsDepotCancel = 0
+			AND fric.IsValidRequest = 1
+			GROUP BY fri.id
+	),Cte_FulfillmentRequestItem AS (Select frItem.Id ,
+	frItem.VendorId,
+	frItem.StatusTypeId,
+	frItem.SequenceNumber,
+	frItem.ItemNumber,
+	frItem.Description,
+	frItem.Quantity,
+	frItem.CancelledQuantity,
+	frItem.ShippedQuantity,
+frItem.FulfillmentRequestHeaderId,
+frItem.OrderLineItemId,
+RTRIM(frItem.AccountsPayableVendorNumber) as AccountsPayableVendorNumber,
+RTRIM(frItem.AccountsPayableVendorNumberSuffix) as AccountsPayableVendorNumberSuffix,
+fritem.Quantity - (fritem.CancelledQuantity + fritem.ShippedQuantity ) as total2
+From FulfillmentRequestItem frItem WITH (NOLOCK) where frItem.CreatedDate between  @CreatedDateStart  and @CreatedDateEnd),Cte_FulfillmentRequestHeader as(
+SELECT ControlNumber,
+Id,FulfillmentCenterCompanyId,OrderHeaderId,CreatedDate from FulfillmentRequestHeader WITH (NOLOCK)  
+where CreatedDate between  @CreatedDateStart  and @CreatedDateEnd),Cte_OrderHeader as (
+SELECT SourceOrderNumber,SourceOrderSystem,WarehouseNumber,Id,Version from OrderHeader WITH (NOLOCK) where
+ CreatedDate between  @CreatedDateStart  and @CreatedDateEnd)
+		
+
+
+SELECT 	
+	frItem.Id as FulfillmentRequestItemId,					
+	frItem.StatusTypeId,
+	frItem.SequenceNumber,
+	frItem.ItemNumber,
+	frItem.Description,
+	frItem.Quantity,
+	frItem.CancelledQuantity,
+	frItem.ShippedQuantity,
+	[OpenQuantity] = fritem.Quantity - (fritem.CancelledQuantity + fritem.ShippedQuantity),
+	[CancelQuantity] = 0,
+	fulHdr.ControlNumber,
+	fulHdr.CreatedDate,
+	[FulfillmentRequestHeaderId] = fulHdr.Id,
+	fulHdr.FulfillmentCenterCompanyId,
+	ordHdr.SourceOrderNumber,
+	ordHdr.SourceOrderSystem,
+	ordHdr.WarehouseNumber,
+	[OrderHeaderId] = ordHdr.Id,
+	[OutputMessage] = '',
+	frItem.OrderLineItemId,		
+	ordHdr.Id as OrderHeaderId,
+	[OrderVersion] = ordHdr.Version,
+	1 AS AddInventoryBackToSystem,
+	VendorNumber = 
+		CASE fc.Code
+					WHEN '3PL' THEN 
+					-- the below substring is due to the fact that AS400 needs 5 digits zero filled for VendorNumber and 2 digits zero filled for VendorNumberSuffix
+						coalesce((select substring('00000', 1, 5 - LEN(VendorNumber)) + VendorNumber + substring('00', 1, 2 - LEN(VendorNumberSuffix)) + VendorNumberSuffix
+						   from OMSItems.dbo.Vendor with (nolock) where Id = fcc.VendorId),'0000000')
+
+					-- the below substringing is due to the fact that AS400 needs 5 digits zero filled for apVendorNumber and 2 digits zero filled for APVendorNumberSuffix
+					ELSE ISNULL(Substring('00000', 1, 5 - LEN(frItem.AccountsPayableVendorNumber)) + frItem.AccountsPayableVendorNumber
+						+ Substring('00', 1, 2 - LEN(frItem.AccountsPayableVendorNumberSuffix)) + frItem.AccountsPayableVendorNumberSuffix, '')
+				END,
+	fric.RequestedCancelQuantity,
+	(fritem.total2 + fric.RequestedCancelQuantity) AS OpenQuantityForCancel
+FROM @FulfillmentRequestHeaderIds headerIds
+INNER JOIN Cte_FulfillmentRequestHeader fulHdr  WITH (NOLOCK) on headerIds.FulfillmentRequestHeaderId = fulHdr.Id
+INNER JOIN Cte_OrderHeader ordHdr  WITH (NOLOCK) on fulHdr.OrderHeaderId = ordHdr.Id
+INNER JOIN  Cte_FulfillmentRequestItem  frItem   ON fulHdr.Id = frItem.FulfillmentRequestHeaderId
+INNER JOIN OMSItems.dbo.Vendor v WITH(NOLOCK) ON frItem.VendorId = v.Id
+INNER JOIN OMSItems.dbo.FulfillmentCenterCompany fcc WITH(NOLOCK) ON fulHdr.FulfillmentCenterCompanyId = fcc.Id
+INNER JOIN	OMSItems.dbo.FulfillmentCenterType fc WITH(NOLOCK) ON fcc.FulfillmentCenterTypeId = fc.Id
+LEFT OUTER JOIN @Items itemList ON frItem.ItemNumber = itemList.ItemNumber
+LEFT OUTER JOIN Cte_FulfillmentItemCancellation fric ON frItem.Id = fric.FulfillmentRequestItemId
+WHERE (@WarehouseNumber = -1 OR ordHdr.WarehouseNumber = @WarehouseNumber)
+AND (DATALENGTH(@ItemNumberList) = 0 OR itemList.ItemNumber IS NOT NULL)
+AND fritem.StatusTypeId = 11 -- active
+AND (fritem.total2 + fric.RequestedCancelQuantity) > 0	
+ORDER BY fulHdr.CreatedDate DESC
+GO
+
+PRINT '  Granting Access...'
+GRANT EXEC ON [dbo].[FulfillmentRequestItem_CancelSearch_r_PerfomanceTuning] TO LeastAccess
+GO
+
+PRINT 'Done'
+
+GO
